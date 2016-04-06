@@ -1,11 +1,17 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
  */
 
 'use strict';
+
+var extraModules = [];
+if (Config.Modes.animations) {
+  extraModules.push('ngAnimate');
+}
+
 
 // Declare app level module which depends on filters, and services
 angular.module('myApp', [
@@ -24,7 +30,7 @@ angular.module('myApp', [
   PRODUCTION_ONLY_END*/
   'myApp.directives',
   'myApp.controllers'
-]).
+].concat(extraModules)).
 config(['$locationProvider', '$routeProvider', '$compileProvider', 'StorageProvider', function($locationProvider, $routeProvider, $compileProvider, StorageProvider) {
 
   $compileProvider.imgSrcSanitizationWhitelist(/^\s*(https?|ftp|file|blob|filesystem|chrome-extension|app):|data:image\//);

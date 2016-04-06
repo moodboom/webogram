@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -187,6 +187,9 @@ angular.module('myApp.filters', ['myApp.i18n'])
   .filter('formatSizeProgress', function ($filter, _) {
     var formatSizeFilter = $filter('formatSize');
     return function (progress) {
+      if (!progress.total) {
+        return '';
+      }
       var done = formatSizeFilter(progress.done, true),
           doneParts = done.split(' '),
           total = formatSizeFilter(progress.total),

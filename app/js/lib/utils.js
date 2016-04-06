@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -55,8 +55,22 @@ function cancelEvent (event) {
 
     if (event.stopPropagation) event.stopPropagation();
     if (event.preventDefault) event.preventDefault();
+    event.returnValue = false;
+    event.cancelBubble = true;
   }
 
+  return false;
+}
+
+function hasOnlick (element) {
+  if (element.onclick ||
+      element.getAttribute('ng-click')) {
+    return true;
+  }
+  var events = $._data(element, 'events');
+  if (events && (events.click || events.mousedown)) {
+    return true;
+  }
   return false;
 }
 
@@ -289,7 +303,21 @@ function scrollToNode (scrollable, node, scroller) {
   }
 }
 
+if (Config.Modes.animations &&
+    typeof window.requestAnimationFrame == 'function') {
+  window.onAnimationFrameCallback = function (cb) {
+    return (function () {
+      window.requestAnimationFrame(cb);
+    });
+  };
+} else {
+  window.onAnimationFrameCallback = function (cb) {
+    return cb;
+  };
+}
+
 function onContentLoaded (cb) {
+  cb = onAnimationFrameCallback(cb);
   setZeroTimeout(cb);
 }
 
@@ -353,7 +381,9 @@ function templateUrl (tplName) {
     reply_markup: 'desktop',
     dialog_service: 'desktop',
     channel_edit_modal: 'desktop',
-    megagroup_edit_modal: 'desktop'
+    megagroup_edit_modal: 'desktop',
+    inline_results: 'desktop',
+    composer_dropdown: 'desktop'
   };
   var layout = forceLayout[tplName] || (Config.Mobile ? 'mobile' : 'desktop');
   return 'partials/' + layout + '/' + tplName + '.html';

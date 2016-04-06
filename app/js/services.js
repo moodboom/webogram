@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -11,9 +11,10 @@
 
 angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
 
-.service('AppUsersManager', function ($rootScope, $modal, $modalStack, $filter, $q, qSync, MtpApiFileManager, MtpApiManager, RichTextProcessor, ErrorService, Storage, _) {
+.service('AppUsersManager', function ($rootScope, $modal, $modalStack, $filter, $q, qSync, MtpApiManager, RichTextProcessor, ErrorService, Storage, _) {
   var users = {},
       usernames = {},
+      userAccess = {},
       cachedPhotoLocations = {},
       contactsFillPromise,
       contactsList,
@@ -151,6 +152,10 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     }
   };
 
+  function saveUserAccess (id, accessHash) {
+    userAccess[id] = accessHash;
+  }
+
   function getUserStatusForSort(status) {
     if (status) {
       var expires = status.expires || status.was_online;
@@ -175,7 +180,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     if (angular.isObject(id)) {
       return id;
     }
-    return users[id] || {id: id, deleted: true, num: 1};
+    return users[id] || {id: id, deleted: true, num: 1, access_hash: userAccess[id]};
   }
 
   function getSelf() {
@@ -464,6 +469,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     getContacts: getContacts,
     saveApiUsers: saveApiUsers,
     saveApiUser: saveApiUser,
+    saveUserAccess: saveUserAccess,
     getUser: getUser,
     getSelf: getSelf,
     getUserInput: getUserInput,
@@ -569,7 +575,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
 
 })
 
-.service('AppChatsManager', function ($q, $rootScope, $modal, _, MtpApiFileManager, MtpApiManager, AppUsersManager, AppPhotosManager, RichTextProcessor) {
+.service('AppChatsManager', function ($q, $rootScope, $modal, _, MtpApiManager, AppUsersManager, AppPhotosManager, RichTextProcessor) {
   var chats = {},
       usernames = {},
       channelAccess = {},
@@ -827,13 +833,14 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
   }
 })
 
-.service('AppPeersManager', function (qSync, AppUsersManager, AppChatsManager, MtpApiManager) {
+.service('AppPeersManager', function ($q, qSync, AppUsersManager, AppChatsManager, MtpApiManager) {
 
   function getInputPeer (peerString) {
     var firstChar = peerString.charAt(0),
         peerParams = peerString.substr(1).split('_');
 
     if (firstChar == 'u') {
+      AppUsersManager.saveUserAccess(peerParams[0], peerParams[1]);
       return {
         _: 'inputPeerUser',
         user_id: peerParams[0],
@@ -937,6 +944,24 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     });
   }
 
+  function resolveInlineMention (username) {
+    return resolveUsername(username).then(function (peerID) {
+      if (peerID > 0) {
+        var bot = AppUsersManager.getUser(peerID);
+        if (bot.pFlags.bot && bot.bot_inline_placeholder !== undefined) {
+          return qSync.when({
+            id: peerID,
+            placeholder: bot.bot_inline_placeholder
+          });
+        }
+      }
+      return $q.reject();
+    }, function (error) {
+      error.handled = true;
+      return $q.reject(error);
+    });
+  }
+
   function getPeerID (peerString) {
     if (angular.isObject(peerString)) {
       return peerString.user_id
@@ -983,6 +1008,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     getPeer: getPeer,
     getPeerPhoto: getPeerPhoto,
     resolveUsername: resolveUsername,
+    resolveInlineMention: resolveInlineMention,
     isChannel: isChannel,
     isMegagroup: isMegagroup,
     isBot: isBot
@@ -1215,6 +1241,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
           });
           break;
       }
+      return $q.reject(error);
     });
   }
 
@@ -1570,6 +1597,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     if (apiWebPage.document && apiWebPage.document._ === 'document') {
       AppDocsManager.saveDoc(apiWebPage.document, mediaContext);
     } else {
+      if (apiWebPage.type == 'document') {
+        delete apiWebPage.type;
+      }
       delete apiWebPage.document;
     }
 
@@ -1900,7 +1930,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
   }
 })
 
-.service('AppDocsManager', function ($sce, $rootScope, $modal, $window, $q, RichTextProcessor, MtpApiFileManager, FileManager, qSync) {
+.service('AppDocsManager', function ($sce, $rootScope, $modal, $window, $q, $timeout, RichTextProcessor, MtpApiFileManager, FileManager, qSync) {
   var docs = {},
       docsForHistory = {},
       windowW = $(window).width(),
@@ -1932,11 +1962,12 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
           break;
         case 'documentAttributeVideo':
           apiDoc.duration = attribute.duration;
+          apiDoc.w = attribute.w;
+          apiDoc.h = attribute.h;
           break;
         case 'documentAttributeSticker':
-          apiDoc.sticker = 1;
+          apiDoc.sticker = true;
           if (attribute.alt !== undefined) {
-            apiDoc.sticker = 2;
             apiDoc.stickerEmojiRaw = attribute.alt;
             apiDoc.stickerEmoji = RichTextProcessor.wrapRichText(apiDoc.stickerEmojiRaw, {noLinks: true, noLinebreaks: true});
           }
@@ -1953,9 +1984,30 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
           apiDoc.w = attribute.w;
           apiDoc.h = attribute.h;
           break;
+        case 'documentAttributeAnimated':
+          apiDoc.animated = true;
+          break;
       }
     });
-    apiDoc.file_name = apiDoc.file_name || '';
+
+    apiDoc.mime_type = apiDoc.mime_type || '';
+    apiDoc.file_name = apiDoc.file_name || 'file';
+    if (apiDoc._ == 'documentEmpty') {
+      apiDoc.file_name = 'DELETED';
+      apiDoc.size = 0;
+    }
+
+    if ((apiDoc.mime_type == 'image/gif' || apiDoc.animated && apiDoc.mime_type == 'video/mp4') && apiDoc.thumb && apiDoc.thumb._ == 'photoSize') {
+      apiDoc.isSpecial = 'gif';
+    }
+    else if (apiDoc.mime_type == 'image/webp' && apiDoc.sticker) {
+      apiDoc.isSpecial = 'sticker';
+    }
+    else if (apiDoc.mime_type.substr(0, 6) == 'audio/') {
+      apiDoc.isSpecial = 'audio';
+    }
+
+
   };
 
   function getDoc (docID) {
@@ -1972,8 +2024,8 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     }
 
     var doc = angular.copy(docs[docID]),
-        isGif = doc.mime_type == 'image/gif',
-        isSticker = doc.mime_type == 'image/webp' && doc.sticker,
+        isGif = doc.isSpecial == 'gif',
+        isSticker = doc.isSpecial == 'sticker',
         thumbPhotoSize = doc.thumb,
         width, height, thumb, dim;
 
@@ -2016,16 +2068,6 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
 
     doc.withPreview = !Config.Mobile && doc.mime_type.match(/^image\/(gif|png|jpeg|jpg|bmp|tiff)/) ? 1 : 0;
 
-    if (isGif && doc.thumb) {
-      doc.isSpecial = 'gif';
-    }
-    else if (isSticker) {
-      doc.isSpecial = 'sticker';
-    }
-    else if (doc.mime_type.substr(0, 6) == 'audio/') {
-      doc.isSpecial = 'audio';
-    }
-
     return docsForHistory[docID] = doc;
   }
 
@@ -2058,6 +2100,10 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
           file_name: doc.file_name
         };
 
+    if (doc._ == 'documentEmpty') {
+      return $q.reject();
+    }
+
     if (historyDoc.downloaded && !toFileEntry) {
       var cachedBlob = MtpApiFileManager.getCachedFile(inputFileLocation);
       if (cachedBlob) {
@@ -2073,13 +2119,18 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     });
 
     downloadPromise.then(function (blob) {
-      delete historyDoc.progress;
       if (blob) {
         FileManager.getFileCorrectUrl(blob, doc.mime_type).then(function (url) {
-          historyDoc.url = $sce.trustAsResourceUrl(url);
+          var trustedUrl = $sce.trustAsResourceUrl(url);
+          historyDoc.url = trustedUrl;
+          doc.url = trustedUrl;
         })
         historyDoc.downloaded = true;
       }
+      historyDoc.progress.percent = 100;
+      $timeout(function () {
+        delete historyDoc.progress;
+      });
       console.log('file save done');
     }, function (e) {
       console.log('document download failed', e);
@@ -2251,24 +2302,81 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
   }
 })
 
-.service('AppStickersManager', function ($q, $rootScope, $modal, _, FileManager, MtpApiManager, MtpApiFileManager, AppDocsManager, Storage) {
+.service('AppStickersManager', function ($q, $rootScope, $modal, _, FileManager, MtpApiManager, AppDocsManager, Storage, ApiUpdatesManager) {
 
-  var currentStickers = [];
-  var currentStickersets = [];
-  var installedStickersets = {};
-  var stickersetItems = {};
-  var applied = false;
   var started = false;
+  var applied = false;
+  var currentStickerSets = [];
+
+  $rootScope.$on('apiUpdate', function (e, update) {
+    if (update._ != 'updateStickerSets' &&
+        update._ != 'updateNewStickerSet' &&
+        update._ != 'updateDelStickerSet' &&
+        update._ != 'updateStickerSetsOrder') {
+      return false;
+    }
+
+    return Storage.get('all_stickers').then(function (stickers) {
+      if (!stickers ||
+          stickers.layer != Config.Schema.API.layer) {
+        $rootScope.$broadcast('stickers_changed');
+      }
+      switch (update._) {
+        case 'updateNewStickerSet':
+          var fullSet = update.stickerset;
+          var set = fullSet.set;
+          var pos = false;
+          for (var i = 0, len = stickers.sets.length; i < len; i++) {
+            if (stickers.sets[i].id == set.id) {
+              pos = i;
+              break;
+            }
+          }
+          if (pos !== false) {
+            stickers.sets.splice(pos, 1);
+          }
+          set.pFlags.installed = true;
+          stickers.sets.unshift(set);
+          stickers.fullSets[set.id] = fullSet;
+          break;
+
+        case 'updateDelStickerSet':
+          var set;
+          for (var i = 0, len = stickers.sets.length; i < len; i++) {
+            set = stickers.sets[i];
+            if (set.id == update.id) {
+              set.pFlags.installed = false;
+              stickers.sets.splice(i, 1);
+              break;
+            }
+          }
+          delete stickers.fullSets[update.id];
+          break;
+
+        case 'updateStickerSetsOrder':
+          var order = update.order;
+          stickers.sets.sort(function (a, b) {
+            return order.indexOf(a.id) - order.indexOf(b.id);
+          });
+          break;
+      }
+      stickers.hash = getStickerSetsHash(stickers.sets);
+      stickers.date = 0;
+      Storage.set({all_stickers: stickers}).then(function () {
+        $rootScope.$broadcast('stickers_changed');
+      });
+    });
+
+  });
 
   return {
     start: start,
+    getStickers: getStickers,
     openStickersetLink: openStickersetLink,
     openStickerset: openStickerset,
     installStickerset: installStickerset,
     pushPopularSticker: pushPopularSticker,
-    getStickers: getStickers,
-    getStickerset: getStickerset,
-    getStickersImages: getStickersImages
+    getStickerset: getStickerset
   };
 
   function start () {
@@ -2276,6 +2384,109 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
       started = true;
       setTimeout(getStickers, 1000);
     }
+  }
+
+  function getStickers (force) {
+    return Storage.get('all_stickers').then(function (stickers) {
+      var layer = Config.Schema.API.layer;
+      if (stickers.layer != layer) {
+        stickers = false;
+      }
+      if (stickers && stickers.date > tsNow(true) && !force) {
+        return processRawStickers(stickers);
+      }
+      return MtpApiManager.invokeApi('messages.getAllStickers', {
+        hash: stickers && stickers.hash || ''
+      }).then(function (newStickers) {
+        var notModified = newStickers._ == 'messages.allStickersNotModified';
+        if (notModified) {
+          newStickers = stickers;
+        }
+        newStickers.date = tsNow(true) + 3600;
+        newStickers.layer = layer;
+        delete newStickers._;
+
+        if (notModified) {
+          Storage.set({all_stickers: newStickers});
+          return processRawStickers(newStickers);
+        }
+
+        return getStickerSets(newStickers, stickers && stickers.fullSets).then(function () {
+          Storage.set({all_stickers: newStickers});
+          return processRawStickers(newStickers);
+        });
+
+      });
+    })
+  }
+
+  function processRawStickers(stickers) {
+    if (applied !== stickers.hash) {
+      applied = stickers.hash;
+      var i, j, len1, len2, doc, set, docIDs, documents;
+
+      currentStickerSets = [];
+      len1 = stickers.sets.length;
+      for (i = 0; i < len1; i++) {
+        set = stickers.sets[i];
+        if (set.pFlags.disabled) {
+          continue;
+        }
+        documents = stickers.fullSets[set.id].documents;
+        len2 = documents.length;
+        docIDs = [];
+        for (j = 0; j < len2; j++) {
+          doc = documents[j];
+          AppDocsManager.saveDoc(doc);
+          docIDs.push(doc.id);
+        }
+        set.docIDs = docIDs;
+        currentStickerSets.push(set);
+      }
+    }
+
+    return getPopularStickers().then(function (popularStickers) {
+      var resultStickersets = currentStickerSets;
+      if (popularStickers.length) {
+        resultStickersets = currentStickerSets.slice();
+        var docIDs = [];
+        var i, len;
+        for (i = 0, len = popularStickers.length; i < len; i++) {
+          docIDs.push(popularStickers[i].id);
+        }
+        resultStickersets.unshift({
+          id: 0,
+          title: _('im_stickers_tab_recent_raw'),
+          short_name: '',
+          docIDs: docIDs
+        });
+      }
+      return resultStickersets;
+    });
+  }
+
+  function getStickerSets (allStickers, prevCachedSets) {
+    var promises = [];
+    var cachedSets = prevCachedSets || allStickers.fullSets || {};
+    allStickers.fullSets = {};
+    angular.forEach(allStickers.sets, function (shortSet) {
+      var fullSet = cachedSets[shortSet.id];
+      if (fullSet && fullSet.set.hash == shortSet.hash) {
+        allStickers.fullSets[shortSet.id] = fullSet;
+      } else {
+        var promise = MtpApiManager.invokeApi('messages.getStickerSet', {
+          stickerset: {
+            _: 'inputStickerSetID',
+            id: shortSet.id,
+            access_hash: shortSet.access_hash
+          }
+        }).then(function (fullSet) {
+          allStickers.fullSets[shortSet.id] = fullSet;
+        });
+        promises.push(promise);
+      }
+    });
+    return $q.all(promises);
   }
 
   function getPopularStickers () {
@@ -2320,140 +2531,6 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     });
   }
 
-  function processRawStickers(stickers) {
-    if (applied !== stickers.hash) {
-      applied = stickers.hash;
-      var i, j, len1, len2, doc, set, setItems, fullSet;
-
-      currentStickersets = [];
-      currentStickers = [];
-      len1 = stickers.sets.length;
-      for (i = 0; i < len1; i++) {
-        set = stickers.sets[i];
-        fullSet = stickers.fullSets[set.id];
-        len2 = fullSet.documents.length;
-        setItems = [];
-        for (j = 0; j < len2; j++) {
-          doc = fullSet.documents[j];
-          AppDocsManager.saveDoc(doc);
-          currentStickers.push(doc.id);
-          setItems.push(doc.id);
-        }
-        currentStickersets.push({
-          id: set.id,
-          title: set.title,
-          short_name: set.short_name,
-          installed: (set.flags & (1 << 0)) > 0,
-          disabled: (set.flags & (1 << 1)) > 0,
-          official: (set.flags & (1 << 2)) > 0,
-          docIDs: setItems
-        });
-        installedStickersets[set.id] = true;
-      }
-    }
-
-    return getPopularStickers().then(function (popularStickers) {
-      var resultStickersets = currentStickersets;
-      if (popularStickers.length) {
-        resultStickersets = currentStickersets.slice();
-        var setItems = [];
-        var i, len;
-        for (i = 0, len = popularStickers.length; i < len; i++) {
-          setItems.push(popularStickers[i].id);
-        }
-        resultStickersets.unshift({
-          id: 0,
-          title: _('im_stickers_tab_recent_raw'),
-          short_name: '',
-          installed: true,
-          disabled: false,
-          official: false,
-          docIDs: setItems
-        })
-      }
-
-      return resultStickersets;
-    });
-  }
-
-  function getStickers (force) {
-    return Storage.get('all_stickers').then(function (stickers) {
-      var layer = Config.Schema.API.layer;
-      if (stickers.layer != layer) {
-        stickers = false;
-      }
-      if (stickers && stickers.date > tsNow(true) && !force) {
-        return processRawStickers(stickers);
-      }
-      return MtpApiManager.invokeApi('messages.getAllStickers', {
-        hash: stickers && stickers.hash || ''
-      }).then(function (newStickers) {
-        var notModified = newStickers._ == 'messages.allStickersNotModified';
-        if (notModified) {
-          newStickers = stickers;
-        }
-        newStickers.date = tsNow(true) + 3600;
-        newStickers.layer = layer;
-        delete newStickers._;
-
-        if (notModified) {
-          Storage.set({all_stickers: newStickers});
-          return processRawStickers(newStickers);
-        }
-
-        return getStickerSets(newStickers).then(function () {
-          Storage.set({all_stickers: newStickers});
-          return processRawStickers(newStickers);
-        });
-
-      });
-    })
-  }
-
-  function getStickerSets (allStickers) {
-    var promises = [];
-    var cachedSets = allStickers.fullSets || {};
-    allStickers.fullSets = {};
-    angular.forEach(allStickers.sets, function (shortSet) {
-      var fullSet = cachedSets[shortSet.id];
-      if (fullSet && fullSet.set.hash == shortSet.hash) {
-        allStickers.fullSets[shortSet.id] = fullSet;
-      } else {
-        var promise = MtpApiManager.invokeApi('messages.getStickerSet', {
-          stickerset: {
-            _: 'inputStickerSetID',
-            id: shortSet.id,
-            access_hash: shortSet.access_hash
-          }
-        }).then(function (fullSet) {
-          allStickers.fullSets[shortSet.id] = fullSet;
-        });
-        promises.push(promise);
-      }
-    });
-    return $q.all(promises);
-  }
-
-  function downloadStickerThumb (docID) {
-    var doc = AppDocsManager.getDoc(docID);
-    var thumbLocation = angular.copy(doc.thumb.location);
-    thumbLocation.sticker = true;
-    return MtpApiFileManager.downloadSmallFile(thumbLocation).then(function (blob) {
-      return {
-        id: doc.id,
-        src: FileManager.getUrl(blob, 'image/webp')
-      };
-    });
-  }
-
-  function getStickersImages () {
-    var promises = [];
-    angular.forEach(currentStickers, function (docID) {
-      promises.push(downloadStickerThumb (docID));
-    });
-    return $q.all(promises);
-  }
-
   function getStickerset (inputStickerset) {
     return MtpApiManager.invokeApi('messages.getStickerSet', {
       stickerset: inputStickerset
@@ -2461,31 +2538,32 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
       for (var i = 0; i < result.documents.length; i++) {
         AppDocsManager.saveDoc(result.documents[i]);
       }
-      result.installed = installedStickersets[result.set.id] !== undefined;
       return result;
     });
   }
 
-  function installStickerset (set, uninstall) {
+  function installStickerset (fullSet, uninstall) {
     var method = uninstall
       ? 'messages.uninstallStickerSet'
       : 'messages.installStickerSet';
     var inputStickerset = {
       _: 'inputStickerSetID',
-      id: set.id,
-      access_hash: set.access_hash
+      id: fullSet.set.id,
+      access_hash: fullSet.set.access_hash
     };
     return MtpApiManager.invokeApi(method, {
       stickerset: inputStickerset,
       disabled: false
     }).then(function (result) {
+      var update;
       if (uninstall) {
-        delete installedStickersets[set.id];
+        update = {_: 'updateDelStickerSet', id: fullSet.set.id};
       } else {
-        installedStickersets[set.id] = true;
+        update = {_: 'updateNewStickerSet', stickerset: fullSet};
       }
-      Storage.remove('all_stickers').then(function () {
-        getStickers(true);
+      ApiUpdatesManager.processUpdateMessage({
+        _: 'updateShort',
+        update: update
       });
     });
   }
@@ -2507,6 +2585,239 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
       windowClass: 'stickerset_modal_window mobile_modal'
     });
   }
+
+  function getStickerSetsHash (stickerSets) {
+    var acc = 0, set;
+    for (var i = 0; i < stickerSets.length; i++) {
+      set = stickerSets[i];
+      if (set.pFlags.disabled || !set.pFlags.installed) {
+        continue;
+      }
+      acc = ((acc * 20261) + 0x80000000 + set.hash) % 0x80000000;
+    }
+    return acc;
+  }
+})
+
+.service('AppInlineBotsManager', function ($rootScope, Storage, MtpApiManager, AppMessagesManager, AppDocsManager, AppPhotosManager, RichTextProcessor, AppUsersManager) {
+
+  var inlineResults = {};
+
+  return {
+    sendInlineResult: sendInlineResult,
+    regroupWrappedResults: regroupWrappedResults,
+    getInlineResults: getInlineResults,
+    getPopularBots: getPopularBots
+  };
+
+  function getPopularBots () {
+    return Storage.get('inline_bots_popular').then(function (bots) {
+      var result = [];
+      var i, len, userID;
+      if (bots && bots.length) {
+        var now = tsNow(true);
+        for (i = 0, len = bots.length; i < len; i++) {
+          if ((now - bots[i][3]) > 14 * 86400) {
+            continue;
+          }
+          userID = bots[i][0];
+          if (!AppUsersManager.hasUser(userID)) {
+            AppUsersManager.saveApiUser(bots[i][1]);
+          }
+          result.push({id: userID, rate: bots[i][2], date: bots[i][3]});
+        }
+      };
+      return result;
+    });
+  }
+
+  function pushPopularBot (id) {
+    getPopularBots().then(function (bots) {
+      var exists = false;
+      var count = bots.length;
+      var result = [];
+      for (var i = 0; i < count; i++) {
+        if (bots[i].id == id) {
+          exists = true;
+          bots[i].rate++;
+          bots[i].date = tsNow(true);
+        }
+        var user = AppUsersManager.getUser(bots[i].id);
+        result.push([bots[i].id, user, bots[i].rate, bots[i].date]);
+      }
+      if (exists) {
+        result.sort(function (a, b) {
+          return b[2] - a[2];
+        });
+      } else {
+        if (result.length > 15) {
+          result = result.slice(0, 15);
+        }
+        result.push([id, AppUsersManager.getUser(id), 1, tsNow(true)]);
+      }
+      ConfigStorage.set({inline_bots_popular: result});
+
+      $rootScope.$broadcast('inline_bots_popular');
+    });
+  }
+
+  function getInlineResults (botID, query, offset) {
+    return MtpApiManager.invokeApi('messages.getInlineBotResults', {
+      bot: AppUsersManager.getUserInput(botID),
+      query: query,
+      offset: offset
+    }, {timeout: 1, stopTime: -1, noErrorBox: true}).then(function(botResults) {
+      var queryID = botResults.query_id;
+      delete botResults._;
+      delete botResults.flags;
+      delete botResults.query_id;
+
+      angular.forEach(botResults.results, function (result) {
+        var qID = queryID + '_' + result.id;
+        result.qID = qID;
+        result.botID = botID;
+
+        result.rTitle = RichTextProcessor.wrapRichText(result.title, {noLinebreaks: true, noLinks: true});
+        result.rDescription = RichTextProcessor.wrapRichText(result.description, {noLinebreaks: true, noLinks: true});
+        result.initials = (result.url || result.title || result.type || '').substr(0, 1)
+
+        if (result.document) {
+          AppDocsManager.saveDoc(result.document);
+        }
+        if (result.photo) {
+          AppPhotosManager.savePhoto(result.photo);
+        }
+
+        inlineResults[qID] = result;
+      });
+      return botResults;
+    });
+  }
+
+  function regroupWrappedResults (results, rowW, rowH) {
+    if (!results ||
+        !results[0] ||
+        results[0].type != 'photo' && results[0].type != 'gif') {
+      return;
+    }
+    var ratios = [];
+    angular.forEach(results, function (result) {
+      var w, h;
+      if (result._ == 'botInlineMediaResultDocument') {
+        w = result.document.w;
+        h = result.document.h;
+      }
+      else if (result._ == 'botInlineMediaResultPhoto') {
+        var photoSize = (result.photo.sizes || [])[0];
+        w = photoSize && photoSize.w;
+        h = photoSize && photoSize.h;
+      }
+      else  {
+        w = result.w;
+        h = result.h;
+      }
+      if (!w || !h) {
+        w = h = 1;
+      }
+      ratios.push(w / h);
+    });
+
+    var rows = [];
+    var curCnt = 0;
+    var curW = 0;
+    angular.forEach(ratios, function (ratio) {
+      var w = ratio * rowH;
+      curW += w;
+      if (!curCnt || curCnt < 4 && curW < (rowW * 1.1)) {
+        curCnt++;
+      } else {
+        rows.push(curCnt);
+        curCnt = 1;
+        curW = w;
+      }
+    });
+    if (curCnt) {
+      rows.push(curCnt);
+    }
+
+    var i = 0;
+    var thumbs = [];
+    var lastRowI = rows.length - 1;
+    angular.forEach(rows, function (rowCnt, rowI) {
+      var lastRow = rowI == lastRowI;
+      var curRatios = ratios.slice(i, i + rowCnt);
+      var sumRatios = 0;
+      angular.forEach(curRatios, function (ratio) {
+        sumRatios += ratio;
+      });
+      angular.forEach(curRatios, function (ratio, j) {
+        var thumbH = rowH;
+        var thumbW = rowW * ratio / sumRatios;
+        var realW = thumbH * ratio;
+        if (lastRow && thumbW > realW) {
+          thumbW = realW;
+        }
+        var result = results[i + j];
+        result.thumbW = Math.floor(thumbW) - 2;
+        result.thumbH = Math.floor(thumbH) - 2;
+      });
+
+      i += rowCnt;
+    });
+  }
+
+  function sendInlineResult (peerID, qID, options) {
+    var inlineResult = inlineResults[qID];
+    if (inlineResult === undefined) {
+      return false;
+    }
+    pushPopularBot(inlineResult.botID);
+    var splitted = qID.split('_');
+    var queryID = splitted.shift();
+    var resultID = splitted.join('_');
+    options = options || {};
+    options.viaBotID = inlineResult.botID;
+    options.queryID = queryID;
+    options.resultID = resultID;
+
+    if (inlineResult.send_message._ == 'botInlineMessageText') {
+      options.entities = inlineResult.send_message.entities;
+      AppMessagesManager.sendText(peerID, inlineResult.send_message.message, options);
+    } else {
+      var caption = '';
+      if (inlineResult.send_message._ == 'botInlineMessageMediaAuto') {
+        caption = inlineResult.send_message.caption;
+      }
+      var inputMedia = false;
+      if (inlineResult._ == 'botInlineMediaResultDocument') {
+        var doc = inlineResult.document;
+        inputMedia = {
+          _: 'inputMediaDocument',
+          id: {_: 'inputDocument', id: doc.id, access_hash: doc.access_hash},
+          caption: caption
+        };
+      }
+      else if (inlineResult._ == 'botInlineMediaResultPhoto') {
+        var photo = inlineResult.photo;
+        inputMedia = {
+          _: 'inputMediaPhoto',
+          id: {_: 'inputPhoto', id: photo.id, access_hash: photo.access_hash},
+          caption: caption
+        };
+      }
+      if (!inputMedia) {
+        inputMedia = {
+          _: 'messageMediaPending',
+          type: inlineResult.type,
+          file_name: inlineResult.title || inlineResult.content_url || inlineResult.url,
+          size: 0,
+          progress: {percent: 30, total: 0}
+        };
+      }
+      AppMessagesManager.sendOther(peerID, inputMedia, options);
+    }
+  }
+
 })
 
 .service('ApiUpdatesManager', function ($rootScope, MtpNetworkerFactory, AppUsersManager, AppChatsManager, AppPeersManager, MtpApiManager) {
@@ -2805,6 +3116,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
   }
 
   function addChannelState (channelID, pts) {
+    if (!pts) {
+      throw new Error('Add channel state without pts ' + channelID);
+    }
     if (channelStates[channelID] === undefined) {
       channelStates[channelID] = {
         pts: pts,
@@ -2819,9 +3133,6 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
 
   function getChannelState (channelID, pts) {
     if (channelStates[channelID] === undefined) {
-      if (!pts) {
-        throw new Error('Get channel empty state without pts ' + channelID);
-      }
       addChannelState(channelID, pts);
     }
     return channelStates[channelID];
@@ -3372,7 +3683,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
     nextSoundAt = now + 1000;
     prevSoundVolume = volume;
     var filename = 'img/sound_a.mp3';
-    var obj = $('#notify_sound').html('<audio autoplay="autoplay">' +
+    var obj = $('#notify_sound').html('<audio autoplay="autoplay" mozaudiochannel="notification">' +
         '<source src="' + filename + '" type="audio/mpeg" />' +
         '<embed hidden="true" autostart="true" loop="false" volume="' + (volume * 100) +'" src="' + filename +'" />' +
         '</audio>');
@@ -3923,7 +4234,7 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
   function handleTgProtoAddr (url, inner) {
     var matches;
 
-    if (matches = url.match(/^resolve\?domain=(.+?)(?:&(start|startgroup)=(.+))?$/)) {
+    if (matches = url.match(/^resolve\?domain=(.+?)(?:&(start|startgroup|post)=(.+))?$/)) {
       AppPeersManager.resolveUsername(matches[1]).then(function (peerID) {
 
         if (peerID > 0 && AppUsersManager.isBot(peerID) && matches[2] == 'startgroup') {
@@ -3940,10 +4251,17 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
           return true;
         }
 
-        $rootScope.$broadcast('history_focus', {
-          peerString: AppPeersManager.getPeerString(peerID),
-          startParam: matches[3]
-        });
+        var params = {
+          peerString: AppPeersManager.getPeerString(peerID)
+        };
+
+        if (matches[2] == 'start') {
+          params.startParam = matches[3];
+        } else {
+          params.messageID = AppMessagesManager.getFullMessageID(parseInt(matches[3]), -peerID);
+        }
+
+        $rootScope.$broadcast('history_focus', params);
       });
       return true;
     }
@@ -3974,8 +4292,22 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
         type: 'JUMP_EXT_URL',
         url: url
       }).then(function () {
-        window.open(url, '_blank');
+        var target = '_blank';
+        if (url.search('https://telegram.me/') === 0) {
+          target = '_self';
+        }
+        window.open(url, target);
       });
+      return true;
+    }
+
+    if (matches = url.match(/^search_hashtag\?hashtag=(.+?)$/)) {
+      $rootScope.$broadcast('dialogs_search', {query: '#' + decodeURIComponent(matches[1])});
+      if (Config.Mobile) {
+        $rootScope.$broadcast('history_focus', {
+          peerString: ''
+        });
+      }
       return true;
     }
 

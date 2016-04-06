@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -375,11 +375,20 @@ angular.module('izhukov.utils', [])
         throw new Exception();
       }
     } catch (error) {
+      console.error('error opening db', error.message);
       storageIsAvailable = false;
       return $q.reject(error);
     }
 
+    var finished = false;
+    setTimeout(function () {
+      if (!finished) {
+        request.onerror({type: 'IDB_CREATE_TIMEOUT'});
+      }
+    }, 3000);
+
     request.onsuccess = function (event) {
+      finished = true;
       db = request.result;
 
       db.onerror = function (error) {
@@ -392,12 +401,14 @@ angular.module('izhukov.utils', [])
     };
 
     request.onerror = function (event) {
+      finished = true;
       storageIsAvailable = false;
       console.error('Error creating/accessing IndexedDB database', event);
       deferred.reject(event);
     }
 
     request.onupgradeneeded = function (event) {
+      finished = true;
       console.warn('performing idb upgrade from', event.oldVersion, 'to', event.newVersion);
       var db = event.target.result;
       if (event.oldVersion == 1) {
@@ -550,6 +561,7 @@ angular.module('izhukov.utils', [])
   openDatabase();
 
   return {
+    name: 'IndexedDB',
     isAvailable: isAvailable,
     saveFile: saveFile,
     getFile: getFile,
@@ -650,6 +662,7 @@ angular.module('izhukov.utils', [])
   requestFS();
 
   return {
+    name: 'TmpFS',
     isAvailable: isAvailable,
     saveFile: saveFile,
     getFile: getFile,
@@ -684,6 +697,7 @@ angular.module('izhukov.utils', [])
   }
 
   return {
+    name: 'Memory',
     isAvailable: isAvailable,
     saveFile: saveFile,
     getFile: getFile,
@@ -963,10 +977,10 @@ angular.module('izhukov.utils', [])
   };
 })
 
-.service('ExternalResourcesManager', function ($q, $http) {
+.service('ExternalResourcesManager', function ($q, $http, $sce) {
   var urlPromises = {};
 
-  function downloadImage (url) {
+  function downloadByURL (url) {
     if (urlPromises[url] !== undefined) {
       return urlPromises[url];
     }
@@ -974,12 +988,18 @@ angular.module('izhukov.utils', [])
     return urlPromises[url] = $http.get(url, {responseType: 'blob', transformRequest: null})
       .then(function (response) {
         window.URL = window.URL || window.webkitURL;
-        return window.URL.createObjectURL(response.data);
+        var url = window.URL.createObjectURL(response.data);
+        return $sce.trustAsResourceUrl(url);
+      }, function (error) {
+        if (!Config.Modes.chrome_packed) {
+          return $q.when($sce.trustAsResourceUrl(url));
+        }
+        return $q.reject(error);
       });
   }
 
   return {
-    downloadImage: downloadImage
+    downloadByURL: downloadByURL
   }
 })
 
@@ -1165,7 +1185,7 @@ angular.module('izhukov.utils', [])
   var usernameRegExp = "[a-zA-Z\\d_]{5,32}";
   var botCommandRegExp = "\\/([a-zA-Z\\d_]{1,32})(?:@(" + usernameRegExp + "))?(\\b|$)"
 
-  var fullRegExp = new RegExp('(^| )(@)(' + usernameRegExp + ')|(' + urlRegExp + ')|(\\n)|(' + emojiRegExp + ')|(^|\\s)(#[' + alphaNumericRegExp + ']{2,64})|(^|\\s)' + botCommandRegExp, 'i');
+  var fullRegExp = new RegExp('(^| )(@)(' + usernameRegExp + ')|(' + urlRegExp + ')|(\\n)|(' + emojiRegExp + ')|(^|[\\s\\(\\]])(#[' + alphaNumericRegExp + ']{2,64})|(^|\\s)' + botCommandRegExp, 'i');
 
   var emailRegExp = /^(([^<>()[\]\\.,;:\s@\"]+(\.[^<>()[\]\\.,;:\s@\"]+)*)|(\".+\"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
   var youtubeRegExp = /^(?:https?:\/\/)?(?:www\.)?youtu(?:|\.be|be\.com|\.b)(?:\/v\/|\/watch\\?v=|e\/|(?:\/\??#)?\/watch(?:.+)v=)(.{11})(?:\&[^\s]*)?/;
@@ -1181,7 +1201,7 @@ angular.module('izhukov.utils', [])
   var markdownRegExp = /(^|\s)(````?)([\s\S]+?)(````?)([\s\n\.,:?!;]|$)|(^|\s)`([^\n]+?)`([\s\.,:?!;]|$)/;
 
   var siteHashtags = {
-    Telegram: '#/im?q=%23{1}',
+    Telegram: 'tg://search_hashtag?hashtag={1}',
     Twitter: 'https://twitter.com/hashtag/{1}',
     Instagram: 'https://instagram.com/explore/tags/{1}/',
     'Google Plus': 'https://plus.google.com/explore/{1}'
@@ -1570,7 +1590,10 @@ angular.module('izhukov.utils', [])
                 url = 'tg://addstickers?set=' + path[1];
                 break;
               default:
-                if (!path[1]) {
+                if (path[1] && path[1].match(/^\d+$/)) {
+                  url = 'tg://resolve?domain=' + path[0] + '&post=' + path[1];
+                }
+                else if (!path[1]) {
                   var domainQuery = path[0].split('?');
                   url = 'tg://resolve?domain=' + domainQuery[0] + (domainQuery[1] ? '&' + domainQuery[1] : '');
                 }

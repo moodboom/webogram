@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -11,6 +11,8 @@
 
 
 angular.module('myApp.directives', ['myApp.filters'])
+
+  .constant('shouldFocusOnInteraction', !Config.Navigator.mobile)
 
   .directive('myHead', function() {
     return {
@@ -43,7 +45,7 @@ angular.module('myApp.directives', ['myApp.filters'])
   .directive('myMessage', function($filter, _) {
 
     var dateFilter = $filter('myDate'),
-        dateSplitHtml = '<div class="im_message_date_split im_service_message_wrap"><div class="im_service_message"></div></div>',
+        dateSplitHtml = '<div class="im_message_date_split im_service_message_wrap"><div class="im_service_message"><span class="copyonly"><br/>---&nbsp;</span><span class="im_message_date_split_text"></span><span class="copyonly">&nbsp;---</span></div></div>',
         unreadSplitHtml = '<div class="im_message_unread_split">' + _('unread_messages_split') + '</div>',
         selectedClass = 'im_message_selected',
         focusClass = 'im_message_focus',
@@ -88,7 +90,7 @@ angular.module('myApp.directives', ['myApp.filters'])
                   needDateSplit.show();
                 } else {
                   needDateSplit = $(dateSplitHtml);
-                  $(needDateSplit[0].firstChild).text(dateFilter($scope.historyMessage.date));
+                  $('.im_message_date_split_text', needDateSplit).text(dateFilter($scope.historyMessage.date));
                   if (unreadAfterSplit) {
                     needDateSplit.insertBefore(unreadAfterSplit)
                   } else {
@@ -449,7 +451,7 @@ angular.module('myApp.directives', ['myApp.filters'])
 
   })
 
-  .directive('myMessageText', function(AppPeersManager, AppMessagesManager, AppUsersManager, RichTextProcessor) {
+  .directive('myMessageText', function(AppPeersManager, AppMessagesManager, AppChatsManager, AppUsersManager, RichTextProcessor) {
     return {
       link: link,
       scope: {
@@ -463,7 +465,7 @@ angular.module('myApp.directives', ['myApp.filters'])
       var fromBot = fromUser && fromUser.pFlags.bot && fromUser.username || false;
       var toPeerID = AppPeersManager.getPeerID(message.to_id);
       var withBot = (fromBot ||
-                    toPeerID < 0 ||
+                    toPeerID < 0 && !(AppChatsManager.isChannel(-toPeerID) && !AppChatsManager.isMegagroup(-toPeerID)) ||
                     toPeerID > 0 && AppUsersManager.isBot(toPeerID));
 
       var options = {
@@ -598,20 +600,20 @@ angular.module('myApp.directives', ['myApp.filters'])
   .directive('myMessageDocument', function(AppDocsManager) {
     return {
       scope: {
-        'document': '=myMessageDocument',
+        'media': '=myMessageDocument',
         'messageId': '=messageId'
       },
       templateUrl: templateUrl('message_attach_document'),
       link: function ($scope, element, attrs) {
-        AppDocsManager.updateDocDownloaded($scope.document.id);
+        AppDocsManager.updateDocDownloaded($scope.media.document.id);
         $scope.docSave = function () {
-          AppDocsManager.saveDocFile($scope.document.id);
+          AppDocsManager.saveDocFile($scope.media.document.id);
         };
         $scope.docOpen = function () {
-          if (!$scope.document.withPreview) {
+          if (!$scope.media.document.withPreview) {
             return $scope.docSave();
           }
-          AppDocsManager.openDoc($scope.document.id, $scope.messageId);
+          AppDocsManager.openDoc($scope.media.document.id, $scope.messageId);
         };
       }
     };
@@ -1097,6 +1099,7 @@ angular.module('myApp.directives', ['myApp.filters'])
           historyEl = $('.im_history', element)[0],
           scrollableWrap = $('.im_history_scrollable_wrap', element)[0],
           scrollable = $('.im_history_scrollable', element)[0],
+          emptyWrapEl = $('.im_history_empty_wrap', element)[0],
           bottomPanelWrap = $('.im_bottom_panel_wrap', element)[0],
           sendFormWrap = $('.im_send_form_wrap', element)[0],
           headWrap = $('.tg_page_head')[0],
@@ -1410,7 +1413,7 @@ angular.module('myApp.directives', ['myApp.filters'])
         $(historyMessagesEl).css({marginTop: 0});
         var marginTop = scrollableWrap.offsetHeight
                         - historyMessagesEl.offsetHeight
-                        - 20
+                        - emptyWrapEl.offsetHeight
                         - (Config.Mobile ? 0 : 39);
 
         if (historyMessagesEl.offsetHeight > 0 && marginTop > 0) {
@@ -1427,8 +1430,7 @@ angular.module('myApp.directives', ['myApp.filters'])
 
   })
 
-  .directive('mySendForm', function (_, $timeout, $compile, $modalStack, $http, $interpolate, Storage, AppStickersManager, AppDocsManager, ErrorService) {
-
+  .directive('mySendForm', function (_, $q, $timeout, $compile, $modalStack, $http, $interpolate, Storage, AppStickersManager, AppDocsManager, ErrorService, AppInlineBotsManager, FileManager, shouldFocusOnInteraction) {
     return {
       link: link,
       scope: {
@@ -1491,6 +1493,11 @@ angular.module('myApp.directives', ['myApp.filters'])
         }
       });
 
+      $scope.$on('stickers_changed', function () {
+        emojiTooltip.onStickersChanged();
+      });
+
+
       var composerEmojiPanel;
       if (emojiPanel) {
         composerEmojiPanel = new EmojiPanel(emojiPanel, {
@@ -1500,9 +1507,6 @@ angular.module('myApp.directives', ['myApp.filters'])
         });
       }
 
-      var peerPhotoCompiled = $compile('<span class="composer_user_photo" my-peer-photolink="peerID" img-class="composer_user_photo"></span>');
-      var cachedPeerPhotos = {};
-
       var composer = new MessageComposer(messageField, {
         onTyping: function () {
           $scope.$emit('ui_typing');
@@ -1510,21 +1514,17 @@ angular.module('myApp.directives', ['myApp.filters'])
         getSendOnEnter: function () {
           return sendOnEnter;
         },
-        getPeerImage: function (element, peerID, noReplace) {
-          if (cachedPeerPhotos[peerID] && !noReplace) {
-            element.replaceWith(cachedPeerPhotos[peerID]);
-            return;
-          }
+        dropdownDirective: function (element, callback) {
           var scope = $scope.$new(true);
-          scope.peerID = peerID;
-          peerPhotoCompiled(scope, function (clonedElement) {
-            cachedPeerPhotos[peerID] = clonedElement;
+          var clonedElement = $compile('<div><div my-composer-dropdown></div></div>')(scope, function (clonedElement, scope) {
             element.replaceWith(clonedElement);
+            callback(scope, clonedElement);
           });
         },
         mentions: $scope.mentions,
         commands: $scope.commands,
         onMessageSubmit: onMessageSubmit,
+        onInlineResultSend: onInlineResultSend,
         onFilePaste: onFilePaste,
         onCommandSend: function (command) {
           $scope.$apply(function () {
@@ -1533,10 +1533,25 @@ angular.module('myApp.directives', ['myApp.filters'])
         }
       });
 
-      var richTextarea = composer.richTextareaEl[0];
+      var richTextarea = composer.richTextareaEl && composer.richTextareaEl[0];
       if (richTextarea) {
         $(richTextarea).on('keydown keyup', updateHeight);
       }
+
+      $scope.$on('inline_results', function (e, inlineResults) {
+        var w = Config.Mobile ? $(window).width() : (messageFieldWrap.offsetWidth || 382) - 2;
+        var h = 80;
+        if (inlineResults) {
+          AppInlineBotsManager.regroupWrappedResults(inlineResults.results, w, h);
+        }
+        setZeroTimeout(function () {
+          composer.setInlineSuggestions(inlineResults);
+        });
+      });
+
+      $scope.$on('inline_placeholder', function(e, data) {
+        composer.setInlinePlaceholder(data.prefix, data.placeholder);
+      });
 
       fileSelects.on('change', function () {
         var self = this;
@@ -1570,8 +1585,14 @@ angular.module('myApp.directives', ['myApp.filters'])
           if (composerEmojiPanel) {
             composerEmojiPanel.update();
           }
-        }, Config.Navigator.touch ? 100 : 0);
+        }, shouldFocusOnInteraction ? 0 : 100);
         return cancelEvent(e);
+      }
+
+      function onInlineResultSend (qID) {
+        $scope.$apply(function () {
+          $scope.draftMessage.inlineResultID = qID;
+        });
       }
 
       function updateValue () {
@@ -1601,7 +1622,7 @@ angular.module('myApp.directives', ['myApp.filters'])
       $('body').on('dragenter dragleave dragover drop', onDragDropEvent);
       $(document).on('paste', onPasteEvent);
 
-      if (!Config.Navigator.touch) {
+      if (shouldFocusOnInteraction) {
         $scope.$on('ui_peer_change', focusField);
         $scope.$on('ui_history_focus', focusField);
         $scope.$on('ui_history_change', focusField);
@@ -1621,7 +1642,7 @@ angular.module('myApp.directives', ['myApp.filters'])
             composer.setValue($scope.draftMessage.text || '');
             updateHeight();
           }
-          if (!Config.Navigator.touch || options && options.focus) {
+          if (shouldFocusOnInteraction || options && options.focus) {
             composer.focus();
           }
         }
@@ -1635,7 +1656,7 @@ angular.module('myApp.directives', ['myApp.filters'])
       $scope.$on('ui_peer_reply', function () {
         onContentLoaded(function () {
           $scope.$emit('ui_editor_resize');
-          if (!Config.Navigator.touch) {
+          if (shouldFocusOnInteraction) {
             composer.focus();
           }
         })
@@ -1649,7 +1670,7 @@ angular.module('myApp.directives', ['myApp.filters'])
         updateValue();
       });
       $scope.$on('ui_message_send', function () {
-        if (!Config.Navigator.touch) {
+        if (shouldFocusOnInteraction) {
           focusField();
         }
       });
@@ -1664,10 +1685,18 @@ angular.module('myApp.directives', ['myApp.filters'])
       }
 
       function onFilePaste (blob) {
-        ErrorService.confirm({type: 'FILE_CLIPBOARD_PASTE'}).then(function () {
-          $scope.draftMessage.files = [blob];
-          $scope.draftMessage.isMedia = true;
-        });
+        var mimeType = blob.type || '';
+        var fileUrlPromise = $q.when(false);
+        if (['image/jpeg', 'image/gif', 'image/png', 'image/bmp'].indexOf(mimeType) >= 0) {
+          fileUrlPromise = FileManager.getFileCorrectUrl(blob, mimeType);
+        }
+        fileUrlPromise.then(function (fileUrl) {
+          fileUrl = fileUrl || false;
+          ErrorService.confirm({type: 'FILE_CLIPBOARD_PASTE', fileUrl: fileUrl}).then(function () {
+            $scope.draftMessage.files = [blob];
+            $scope.draftMessage.isMedia = true;
+          });
+        })
       };
 
       function onPasteEvent (e) {
@@ -1684,6 +1713,9 @@ angular.module('myApp.directives', ['myApp.filters'])
         }
 
         if (files.length > 0) {
+          if (files.length == 1) {
+            return onFilePaste(files[0]);
+          }
           ErrorService.confirm({type: 'FILES_CLIPBOARD_PASTE', files: files}).then(function () {
             $scope.draftMessage.files = files;
             $scope.draftMessage.isMedia = true;
@@ -1707,7 +1739,9 @@ angular.module('myApp.directives', ['myApp.filters'])
 
           if (e.type == 'dragenter' || e.type == 'dragover') {
             if (dragStateChanged) {
-              $(emojiButton).hide();
+              if (!Config.Mobile) {
+                $(emojiButton).hide();
+              }
               $(dropbox)
                 .css({height: messageFieldWrap.offsetHeight + 2, width: messageFieldWrap.offsetWidth})
                 .show();
@@ -1721,7 +1755,9 @@ angular.module('myApp.directives', ['myApp.filters'])
             }
             dragTimeout = setTimeout(function () {
               $(dropbox).hide();
-              $(emojiButton).show();
+              if (!Config.Mobile) {
+                $(emojiButton).show();
+              }
               dragStarted = false;
               dragTimeout = false;
             }, 300);
@@ -1740,7 +1776,7 @@ angular.module('myApp.directives', ['myApp.filters'])
         fileSelects.off('change');
       });
 
-      if (!Config.Navigator.touch) {
+      if (shouldFocusOnInteraction) {
         focusField();
       }
 
@@ -1978,7 +2014,7 @@ angular.module('myApp.directives', ['myApp.filters'])
 
   })
 
-  .directive('myLoadGif', function(AppDocsManager) {
+  .directive('myLoadGif', function(AppDocsManager, $timeout) {
 
     return {
       link: link,
@@ -1990,12 +2026,24 @@ angular.module('myApp.directives', ['myApp.filters'])
 
     function link ($scope, element, attrs) {
 
+      var imgWrap = $('.img_gif_image_wrap', element);
+      imgWrap.css({width: $scope.document.thumb.width, height: $scope.document.thumb.height});
+
       var downloadPromise = false;
 
       $scope.isActive = false;
 
+      // Demo
+      // $scope.document.progress = {enabled: true, percent: 30};
+      // $timeout(function () {
+      //   $scope.document.progress.percent = 60;
+      // }, 3000);
+      // $timeout(function () {
+      //   $scope.document.progress.percent = 100;
+      // }, 10000);
+
       $scope.toggle = function (e) {
-        if (checkClick(e, true)) {
+        if (e && checkClick(e, true)) {
           AppDocsManager.saveDocFile($scope.document.id);
           return false;
         }
@@ -2004,6 +2052,16 @@ angular.module('myApp.directives', ['myApp.filters'])
           onContentLoaded(function () {
             $scope.isActive = !$scope.isActive;
             $scope.$emit('ui_height');
+
+            var video = $('video', element)[0];
+            if (video) {
+              if (!$scope.isActive) {
+                video.pause();
+                video.currentTime = 0;
+              } else {
+                video.play();
+              }
+            }
           })
           return;
         }
@@ -2017,14 +2075,22 @@ angular.module('myApp.directives', ['myApp.filters'])
         downloadPromise = AppDocsManager.downloadDoc($scope.document.id);
 
         downloadPromise.then(function () {
-          $scope.isActive = true;
-          $scope.$emit('ui_height');
+          $timeout(function () {
+            $scope.isActive = true;
+          }, 200);
         })
       }
+
+      // Autoplay small GIFs
+      // if (!Config.Mobile &&
+      //     $scope.document.size &&
+      //     $scope.document.size < 1024 * 1024) {
+      //   $scope.toggle();
+      // }
     }
   })
 
-  .directive('myLoadSticker', function(MtpApiFileManager, FileManager, AppStickersManager) {
+  .directive('myLoadSticker', function(_, MtpApiFileManager, FileManager, AppStickersManager) {
 
     var emptySrc = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
@@ -2038,6 +2104,10 @@ angular.module('myApp.directives', ['myApp.filters'])
     function link ($scope, element, attrs) {
       var imgElement = $('<img />').addClass(attrs.imgClass);
       var wasAdded = false;
+
+      imgElement.attr('alt', '['+ ($scope.document.stickerEmojiRaw || '') + ' ' + _('conversation_media_sticker') +']');
+
+      var dim = attrs.dim && $scope.$parent.$eval(attrs.dim) || $scope.document.thumb;
 
       if (attrs.open && $scope.document.stickerSetInput) {
         element
@@ -2056,12 +2126,12 @@ angular.module('myApp.directives', ['myApp.filters'])
       };
 
       imgElement.css({
-        width: $scope.document.thumb.width,
-        height: $scope.document.thumb.height
+        width: dim.width,
+        height: dim.height
       });
       element.css({
-        width: $scope.document.thumb.width,
-        height: $scope.document.thumb.height
+        width: dim.width,
+        height: dim.height
       });
 
       var smallLocation = false;
@@ -2235,8 +2305,8 @@ angular.module('myApp.directives', ['myApp.filters'])
 
       var src = 'https://maps.googleapis.com/maps/api/staticmap?sensor=false&center=' + $scope.point['lat'] + ',' + $scope.point['long'] + '&zoom=15&size='+width+'x'+height+'&scale=2&key=' + apiKey;
 
-      ExternalResourcesManager.downloadImage(src).then(function (url) {
-        element.attr('src', url);
+      ExternalResourcesManager.downloadByURL(src).then(function (url) {
+        element.attr('src', url.valueOf());
       });
     }
 
@@ -2275,10 +2345,10 @@ angular.module('myApp.directives', ['myApp.filters'])
     }
   })
 
-  .directive('myFocused', function(){
+  .directive('myFocused', function(shouldFocusOnInteraction) {
     return {
       link: function($scope, element, attrs) {
-        if (Config.Navigator.touch) {
+        if (!shouldFocusOnInteraction) {
           return false;
         }
         setTimeout(function () {
@@ -2288,11 +2358,11 @@ angular.module('myApp.directives', ['myApp.filters'])
     };
   })
 
-  .directive('myFocusOn', function(){
+  .directive('myFocusOn', function(shouldFocusOnInteraction) {
     return {
       link: function($scope, element, attrs) {
         $scope.$on(attrs.myFocusOn, function () {
-          if (Config.Navigator.touch) {
+          if (!shouldFocusOnInteraction) {
             return false;
           }
           onContentLoaded(function () {
@@ -2599,16 +2669,22 @@ angular.module('myApp.directives', ['myApp.filters'])
     function link($scope, element, attrs) {
       var chatID;
       var curInd = ind++;
+      var jump = 0;
       var participantsCount = 0;
       var participants = {};
 
       var updateParticipants = function () {
+        var curJump = ++jump;
         participantsCount = 0;
         participants = {};
         if (!chatID) {
+          update();
           return;
         }
         AppProfileManager.getChatFull(chatID).then(function (chatFull) {
+          if (curJump != jump) {
+            return;
+          }
           var participantsVector = (chatFull.participants || {}).participants || [];
           participantsCount = participantsVector.length;
           angular.forEach(participantsVector, function (participant) {
@@ -2706,6 +2782,7 @@ angular.module('myApp.directives', ['myApp.filters'])
 
       var override = attrs.userOverride && $scope.$eval(attrs.userOverride) || {};
       var short = attrs.short && $scope.$eval(attrs.short);
+      var username = attrs.username && $scope.$eval(attrs.username);
 
       var peerID;
       var update = function () {
@@ -2714,9 +2791,11 @@ angular.module('myApp.directives', ['myApp.filters'])
         }
         if (peerID > 0) {
           var user = AppUsersManager.getUser(peerID);
-          var key = short ? 'rFirstName' : 'rFullName';
+          var prefix = username ? '@' : '';
+          var key = username ? 'username' : (short ? 'rFirstName' : 'rFullName');
 
           element.html(
+            prefix +
             (override[key] || user[key] || '').valueOf() +
             (attrs.verified && user.pFlags && user.pFlags.verified ? ' <i class="icon-verified"></i>' : '')
           );
@@ -2733,7 +2812,7 @@ angular.module('myApp.directives', ['myApp.filters'])
         }
       };
 
-      if (element[0].tagName == 'A') {
+      if (element[0].tagName == 'A' && !hasOnlick(element[0])) {
         element.on('click', function () {
           if (peerID > 0) {
             AppUsersManager.openUser(peerID, override);
@@ -2778,7 +2857,7 @@ angular.module('myApp.directives', ['myApp.filters'])
 
       var peerID, peer, peerPhoto;
       var imgEl = $('<img class="' + (attrs.imgClass || '') + '">');
-      var initEl = $('<span class="peer_initials ' + (attrs.imgClass || '') + '"></span>');
+      var initEl = $('<span class="peer_initials nocopy ' + (attrs.imgClass || '') + '"></span>');
       var jump = 0;
       var prevClass = false;
 
@@ -2819,7 +2898,7 @@ angular.module('myApp.directives', ['myApp.filters'])
           }
         }
 
-        initEl.text(peer.initials).prependTo(element);
+        initEl.attr('data-content', peer.initials || '').prependTo(element);
         imgEl.remove();
 
 
@@ -3218,6 +3297,72 @@ angular.module('myApp.directives', ['myApp.filters'])
     };
   })
 
+  .directive('myArcProgress', function () {
+    var html =
+'<svg class="progress-arc" viewPort="0 0 100 100" version="1.1" xmlns="http://www.w3.org/2000/svg">\
+  <defs>\
+    <linearGradient id="grad_intermediate%id%" x1="0%" y1="0%" x2="100%" y2="0%">\
+      <stop offset="0%" class="stop0" />\
+      <stop offset="60%" class="stop60" />\
+      <stop offset="100%"  class="stop100"/>\
+    </linearGradient>\
+  </defs>\
+  <circle class="progress-arc-bar"></circle>\
+</svg>';
+
+    function updateProgress (bar, progress, fullLen) {
+      progress = Math.max(0.0, Math.min(progress, 1.0));
+      var minProgress = 0.2;
+      progress = minProgress + (1 - minProgress) * progress;
+      bar.css({strokeDasharray: (progress * fullLen) + ', ' + ((1 - progress) * fullLen)});
+    }
+
+    var num = 0;
+
+    return {
+      scope: {
+        progress: '=myArcProgress'
+      },
+      link: function  ($scope, element, attrs) {
+        var intermediate = !attrs.myArcProgress;
+        var width = attrs.width || element.width() || 40;
+        var stroke = attrs.stroke || (width / 2 * 0.14);
+        var center = width / 2;
+        var radius = center - (stroke / 2);
+
+        // Doesn't work without unique id for every gradient
+        var curNum = ++num;
+
+        element
+          .html(html.replace('%id%', curNum))
+          .addClass('progress-arc-wrap')
+          .addClass(intermediate ? 'progress-arc-intermediate' : 'progress-arc-percent')
+          .css({width: width, height: width});
+
+        $(element[0].firstChild)
+          .attr('width', width)
+          .attr('height', width);
+
+        var bar = $('.progress-arc-bar', element);
+        bar
+          .attr('cx', center)
+          .attr('cy', center)
+          .attr('r', radius)
+          .css({strokeWidth: stroke});
+
+        var fullLen = 2 * Math.PI * radius;
+        if (intermediate) {
+          updateProgress(bar, 0.3, fullLen);
+          bar.css({stroke: 'url(#grad_intermediate' + curNum + ')'});
+        } else {
+          $scope.$watch('progress', function (newProgress) {
+            updateProgress(bar, newProgress / 100.0, fullLen);
+          });
+        }
+      }
+    }
+  })
+
   .directive('myScrollToOn', function () {
 
     return {
@@ -3239,3 +3384,88 @@ angular.module('myApp.directives', ['myApp.filters'])
     };
 
   })
+
+  .directive('myComposerDropdown', function () {
+
+    return {
+      templateUrl: templateUrl('composer_dropdown')
+    }
+  })
+
+  .directive('myEmojiSuggestions', function () {
+
+    return {
+      link: function($scope, element, attrs) {
+        $scope.$watchCollection('emojiCodes', function (codes) {
+          // var codes = $scope.$eval(attrs.myEmojiSuggestions);
+          var html = [];
+          var iconSize = Config.Mobile ? 26 : 20;
+
+          var emoticonCode, emoticonData, spritesheet, pos, categoryIndex;
+          var count = Math.min(5, codes.length);
+          var i, x, y;
+
+          for (i = 0; i < count; i++) {
+            emoticonCode = codes[i];
+            if (emoticonCode.code) {
+              emoticonCode = emoticonCode.code;
+            }
+            if (emoticonData = Config.Emoji[emoticonCode]) {
+              spritesheet = EmojiHelper.spritesheetPositions[emoticonCode];
+              categoryIndex = spritesheet[0];
+              pos = spritesheet[1];
+              x = iconSize * spritesheet[3];
+              y = iconSize * spritesheet[2];
+              html.push('<li><a class="composer_emoji_option" data-code="' + encodeEntities(emoticonCode) + '"><i class="emoji emoji-w', iconSize, ' emoji-spritesheet-' + categoryIndex + '" style="background-position: -' + x + 'px -' + y + 'px;"></i><span class="composer_emoji_shortcut">:' + encodeEntities(emoticonData[1][0]) + ':</span></a></li>');
+            }
+          }
+          // onContentLoaded(function () {
+            element.html(html.join(''));
+            console.log(dT(), 'emoji done');
+          // });
+        });
+      }
+    };
+
+  })
+
+  .directive('myInlineResults', function (AppPhotosManager, ExternalResourcesManager, AppDocsManager) {
+
+    return {
+      templateUrl: templateUrl('inline_results'),
+      scope: {
+        botResults: '=myInlineResults'
+      },
+
+      link: function  ($scope, element, attrs) {
+        $scope.$watch('botResults.results', function (results) {
+          angular.forEach(results, function (result) {
+            if (result.thumb_url && !result.thumbUrl) {
+              ExternalResourcesManager.downloadByURL(result.thumb_url).then(function (url) {
+                result.thumbUrl = url;
+              });
+            }
+            if (result.type == 'gif' && result.content_url && !result.contentUrl) {
+              ExternalResourcesManager.downloadByURL(result.content_url).then(function (url) {
+                result.contentUrl = url;
+              });
+            }
+            if (result.type == 'gif' && result.document) {
+              AppDocsManager.downloadDoc(result.document.id);
+            }
+            if (result.type == 'photo' && result.photo) {
+              var photoSize = AppPhotosManager.choosePhotoSize(result.photo, result.thumbW, result.thumbH),
+                  dim = calcImageInBox(photoSize.w, photoSize.h, result.thumbW, result.thumbH);
+              result.thumb = {
+                width: dim.w,
+                height: dim.h,
+                location: photoSize.location,
+                size: photoSize.size
+              };
+            }
+          })
+        });
+      }
+    }
+  })
+

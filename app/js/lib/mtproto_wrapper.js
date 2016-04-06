@@ -1,5 +1,5 @@
 /*!
- * Webogram v0.5.2 - messaging web application for MTProto
+ * Webogram v0.5.3 - messaging web application for MTProto
  * https://github.com/zhukov/webogram
  * Copyright (C) 2014 Igor Zhukov <igor.beatle@gmail.com>
  * https://github.com/zhukov/webogram/blob/master/LICENSE
@@ -216,7 +216,7 @@ angular.module('izhukov.mtproto.wrapper', ['izhukov.utils', 'izhukov.mtproto'])
                 networker.wrapApiCall(method, params, options).then(function (result) {
                   deferred.resolve(result);
                 }, rejectPromise);
-              });
+              }, rejectPromise);
             }
           }
           else if (!options.rawError && error.code == 420) {
@@ -384,11 +384,13 @@ angular.module('izhukov.mtproto.wrapper', ['izhukov.utils', 'izhukov.mtproto'])
   }
 
   function getFileStorage () {
-    if (TmpfsFileStorage.isAvailable()) {
-      return TmpfsFileStorage;
-    }
-    if (IdbFileStorage.isAvailable()) {
-      return IdbFileStorage;
+    if (!Config.Modes.memory_only) {
+      if (TmpfsFileStorage.isAvailable()) {
+        return TmpfsFileStorage;
+      }
+      if (IdbFileStorage.isAvailable()) {
+        return IdbFileStorage;
+      }
     }
     return MemoryFileStorage;
   }
@@ -492,7 +494,7 @@ angular.module('izhukov.mtproto.wrapper', ['izhukov.utils', 'izhukov.mtproto'])
 
     var fileStorage = getFileStorage();
 
-    // console.log(dT(), 'fs', fileStorage, fileName, cachedPromise);
+    // console.log(dT(), 'fs', fileStorage.name, fileName, cachedPromise);
 
     if (cachedPromise) {
       if (toFileEntry) {
